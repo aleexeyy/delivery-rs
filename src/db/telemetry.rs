@@ -119,3 +119,110 @@ fn bulk_bytes_to_f64(val: redis::Value) -> Option<f64> {
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use redis::Value;
+
+    // --- bulk_bytes_to_f64 ---
+
+    #[test]
+    fn bulk_bytes_to_f64_parses_valid_bulk_string() {
+        let val = Value::BulkString(b"3.14159".to_vec());
+        let result = bulk_bytes_to_f64(val).unwrap();
+        assert!((result - 3.14159).abs() < 1e-5);
+    }
+
+    #[test]
+    fn bulk_bytes_to_f64_parses_negative_bulk_string() {
+        let val = Value::BulkString(b"-74.0060".to_vec());
+        let result = bulk_bytes_to_f64(val).unwrap();
+        assert!((result - (-74.0060)).abs() < 1e-4);
+    }
+
+    #[test]
+    fn bulk_bytes_to_f64_parses_simple_string() {
+        let val = Value::SimpleString("2.71828".to_string());
+        let result = bulk_bytes_to_f64(val).unwrap();
+        assert!((result - 2.71828).abs() < 1e-5);
+    }
+
+    #[test]
+    fn bulk_bytes_to_f64_returns_none_for_invalid_utf8() {
+        let val = Value::BulkString(vec![0xFF, 0xFE, 0xFD]);
+        assert_eq!(bulk_bytes_to_f64(val), None);
+    }
+
+    #[test]
+    fn bulk_bytes_to_f64_returns_none_for_non_numeric_string() {
+        let val = Value::BulkString(b"not-a-number".to_vec());
+        assert_eq!(bulk_bytes_to_f64(val), None);
+    }
+
+    #[test]
+    fn bulk_bytes_to_f64_returns_none_for_array_value() {
+        let val = Value::Array(vec![]);
+        assert_eq!(bulk_bytes_to_f64(val), None);
+    }
+
+    // --- parse_geopos_value ---
+
+    #[test]
+    fn parse_geopos_value_returns_lng_lat_for_valid_pair() {
+        // GEOPOS returns [longitude, latitude]
+        let val = Value::Array(vec![
+            Value::BulkString(b"2.3508".to_vec()),  // longitude
+            Value::BulkString(b"48.8566".to_vec()), // latitude
+        ]);
+        let (lng, lat) = parse_geopos_value(val).unwrap();
+        assert!((lng - 2.3508).abs() < 1e-4, "lng mismatch: {lng}");
+        assert!((lat - 48.8566).abs() < 1e-4, "lat mismatch: {lat}");
+    }
+
+    #[test]
+    fn parse_geopos_value_returns_none_for_non_array() {
+        let val = Value::BulkString(b"2.3508".to_vec());
+        assert_eq!(parse_geopos_value(val), None);
+    }
+
+    #[test]
+    fn parse_geopos_value_returns_none_for_empty_array() {
+        let val = Value::Array(vec![]);
+        assert_eq!(parse_geopos_value(val), None);
+    }
+
+    #[test]
+    fn parse_geopos_value_returns_none_for_single_element_array() {
+        let val = Value::Array(vec![Value::BulkString(b"2.3508".to_vec())]);
+        assert_eq!(parse_geopos_value(val), None);
+    }
+
+    #[test]
+    fn parse_geopos_value_returns_none_for_three_element_array() {
+        let val = Value::Array(vec![
+            Value::BulkString(b"2.3508".to_vec()),
+            Value::BulkString(b"48.8566".to_vec()),
+            Value::BulkString(b"extra".to_vec()),
+        ]);
+        assert_eq!(parse_geopos_value(val), None);
+    }
+
+    #[test]
+    fn parse_geopos_value_returns_none_for_non_numeric_longitude() {
+        let val = Value::Array(vec![
+            Value::BulkString(b"not-a-number".to_vec()),
+            Value::BulkString(b"48.8566".to_vec()),
+        ]);
+        assert_eq!(parse_geopos_value(val), None);
+    }
+
+    #[test]
+    fn parse_geopos_value_returns_none_for_non_numeric_latitude() {
+        let val = Value::Array(vec![
+            Value::BulkString(b"2.3508".to_vec()),
+            Value::BulkString(b"not-a-number".to_vec()),
+        ]);
+        assert_eq!(parse_geopos_value(val), None);
+    }
+}
