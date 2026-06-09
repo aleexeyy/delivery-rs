@@ -10,16 +10,15 @@ pub fn router(state: AppState) -> Router {
 }
 
 async fn health_check(State(state): State<AppState>) -> Result<Json<HealthResponse>, ApiError> {
-    if let Some(mut conn) = state.pool.try_acquire() {
-        conn.ping().await.map_err(|e| {
-            tracing::error!("Health check DB ping failed: {e}");
-            ApiError::InternalServerError
-        })?;
+    let mut conn = state.pool.acquire().await.map_err(|e| {
+        crate::throttled_warn!(60, error = %e, "Health check: failed to acquire DB connection");
+        ApiError::InternalServerError
+    })?;
 
-        Ok(Json(HealthResponse { status: "OK" }))
-    } else {
-        tracing::error!("Health check failed: no DB connection available");
+    conn.ping().await.map_err(|e| {
+        crate::throttled_warn!(60, error = %e, "Health check: DB ping failed");
+        ApiError::InternalServerError
+    })?;
 
-        Err(ApiError::InternalServerError)
-    }
+    Ok(Json(HealthResponse { status: "OK" }))
 }

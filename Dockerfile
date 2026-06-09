@@ -21,15 +21,20 @@ RUN cargo build --release --locked --bin delivery-rs
 # run the app
 FROM debian:bookworm-slim AS runtime
 
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
 RUN useradd -r -u 100 -s /bin/false -M appuser
 WORKDIR /app
 
-COPY --from=curlimages/curl:latest /usr/bin/curl /usr/bin/curl
 COPY --from=builder --chown=appuser:appuser /app/target/release/delivery-rs .
+
+RUN mkdir -p /app/logs && chown appuser:appuser /app/logs
 
 USER appuser
 
-ARG RUST_LOG="delivery-rs=debug,tower_http=debug"
+ARG RUST_LOG="delivery_rs=debug,tower_http=debug"
 ENV RUST_LOG=${RUST_LOG} \
     HOST="0.0.0.0" \
     APP_PORT="3000" \
@@ -37,8 +42,5 @@ ENV RUST_LOG=${RUST_LOG} \
     RUN_MIGRATIONS="true"
 
 EXPOSE 3000
-
-HEALTHCHECK --interval=30s --timeout=3s \
-  CMD curl -f http://localhost:3000/health || exit 1
 
 CMD ["./delivery-rs"]

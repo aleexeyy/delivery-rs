@@ -1,0 +1,637 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Fleet Tracker</title>
+        <link
+            rel="stylesheet"
+            href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+            crossorigin=""
+        />
+        <script src="https://unpkg.com/@msgpack/msgpack"></script>
+        <style>
+            *,
+            *::before,
+            *::after {
+                margin: 0;
+                padding: 0;
+                box-sizing: border-box;
+            }
+
+            html,
+            body,
+            #map {
+                height: 100%;
+                width: 100%;
+                font-family:
+                    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+                    sans-serif;
+            }
+
+            /* ── Status bar ─────────────────────────────────────────────────────────── */
+            #status-bar {
+                position: absolute;
+                top: 12px;
+                right: 12px;
+                z-index: 1000;
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                padding: 8px 14px;
+                background: rgba(10, 15, 28, 0.88);
+                backdrop-filter: blur(10px);
+                border: 1px solid rgba(255, 255, 255, 0.07);
+                border-radius: 10px;
+                color: #cbd5e1;
+                font-size: 13px;
+                user-select: none;
+                pointer-events: none;
+            }
+
+            #conn-dot {
+                width: 7px;
+                height: 7px;
+                border-radius: 50%;
+                background: #4b5563;
+                flex-shrink: 0;
+                transition: background 0.4s;
+            }
+            #conn-dot.connected {
+                background: #22c55e;
+            }
+            #conn-dot.reconnecting {
+                background: #f59e0b;
+                animation: blink 1s ease-in-out infinite;
+            }
+            @keyframes blink {
+                0%,
+                100% {
+                    opacity: 1;
+                }
+                50% {
+                    opacity: 0.3;
+                }
+            }
+
+            /* ── Legend ─────────────────────────────────────────────────────────────── */
+            #legend {
+                position: absolute;
+                bottom: 30px;
+                left: 12px;
+                z-index: 1000;
+                display: flex;
+                flex-direction: column;
+                gap: 7px;
+                padding: 10px 14px;
+                background: rgba(10, 15, 28, 0.88);
+                backdrop-filter: blur(10px);
+                border: 1px solid rgba(255, 255, 255, 0.07);
+                border-radius: 10px;
+                pointer-events: none;
+                user-select: none;
+            }
+
+            .legend-item {
+                display: flex;
+                align-items: center;
+                gap: 9px;
+                font-size: 12px;
+                color: #94a3b8;
+            }
+
+            .legend-dot {
+                width: 10px;
+                height: 10px;
+                border-radius: 50%;
+                flex-shrink: 0;
+            }
+
+            .legend-ring {
+                width: 10px;
+                height: 10px;
+                border-radius: 50%;
+                flex-shrink: 0;
+                border: 2px solid #3b82f6;
+                background: transparent;
+                opacity: 0.65;
+            }
+
+            /* ── Modal overlay ──────────────────────────────────────────────────────── */
+            #modal-overlay {
+                display: none;
+                position: fixed;
+                inset: 0;
+                z-index: 2000;
+                background: rgba(0, 0, 0, 0.4);
+                backdrop-filter: blur(3px);
+                align-items: center;
+                justify-content: center;
+            }
+            #modal-overlay.open {
+                display: flex;
+            }
+
+            #modal {
+                background: rgba(10, 15, 28, 0.96);
+                border: 1px solid rgba(255, 255, 255, 0.09);
+                border-radius: 14px;
+                padding: 22px 24px;
+                width: 300px;
+                color: #e2e8f0;
+                box-shadow: 0 24px 64px rgba(0, 0, 0, 0.6);
+                animation: modal-in 0.15s ease-out;
+            }
+            @keyframes modal-in {
+                from {
+                    opacity: 0;
+                    transform: scale(0.95) translateY(6px);
+                }
+                to {
+                    opacity: 1;
+                    transform: scale(1) translateY(0);
+                }
+            }
+
+            .modal-header {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                margin-bottom: 14px;
+            }
+
+            .modal-title {
+                font-size: 16px;
+                font-weight: 600;
+                color: #f1f5f9;
+                letter-spacing: -0.01em;
+            }
+
+            .modal-close {
+                background: none;
+                border: none;
+                color: #475569;
+                font-size: 16px;
+                cursor: pointer;
+                padding: 3px 7px;
+                border-radius: 6px;
+                line-height: 1;
+                transition:
+                    color 0.15s,
+                    background 0.15s;
+            }
+            .modal-close:hover {
+                background: rgba(255, 255, 255, 0.07);
+                color: #94a3b8;
+            }
+
+            .modal-badge {
+                display: inline-flex;
+                align-items: center;
+                gap: 5px;
+                font-size: 11px;
+                font-weight: 600;
+                text-transform: uppercase;
+                letter-spacing: 0.06em;
+                padding: 3px 9px;
+                border-radius: 999px;
+                margin-bottom: 18px;
+            }
+            .modal-badge.delivering {
+                background: rgba(59, 130, 246, 0.15);
+                color: #60a5fa;
+                border: 1px solid rgba(59, 130, 246, 0.25);
+            }
+            .modal-badge.idle {
+                background: rgba(107, 114, 128, 0.15);
+                color: #9ca3af;
+                border: 1px solid rgba(107, 114, 128, 0.25);
+            }
+
+            .modal-rows {
+                display: flex;
+                flex-direction: column;
+                gap: 11px;
+            }
+
+            .modal-row {
+                display: flex;
+                justify-content: space-between;
+                align-items: flex-start;
+                gap: 12px;
+            }
+
+            .modal-label {
+                font-size: 12px;
+                color: #475569;
+                white-space: nowrap;
+                padding-top: 1px;
+            }
+
+            .modal-value {
+                font-size: 13px;
+                color: #94a3b8;
+                text-align: right;
+                font-variant-numeric: tabular-nums;
+            }
+
+            .modal-value.accent {
+                color: #60a5fa;
+                font-weight: 500;
+            }
+
+            .modal-divider {
+                border: none;
+                border-top: 1px solid rgba(255, 255, 255, 0.06);
+            }
+        </style>
+    </head>
+    <body>
+        <div id="map"></div>
+
+        <div id="status-bar">
+            <span id="conn-dot"></span>
+            <span id="status-text">Connecting…</span>
+        </div>
+
+        <div id="legend">
+            <div class="legend-item">
+                <div class="legend-dot" style="background: #3b82f6"></div>
+                <span>Delivering</span>
+            </div>
+            <div class="legend-item">
+                <div class="legend-dot" style="background: #6b7280"></div>
+                <span>Idle</span>
+            </div>
+            <div class="legend-item">
+                <div class="legend-ring"></div>
+                <span>Destination</span>
+            </div>
+        </div>
+
+        <div
+            id="modal-overlay"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="modal-title"
+        >
+            <div id="modal">
+                <div class="modal-header">
+                    <span class="modal-title" id="modal-title">Vehicle</span>
+                    <button
+                        class="modal-close"
+                        id="modal-close"
+                        aria-label="Close"
+                    >
+                        ✕
+                    </button>
+                </div>
+                <div class="modal-badge idle" id="modal-badge">● Idle</div>
+                <div class="modal-rows">
+                    <div class="modal-row">
+                        <span class="modal-label">Position</span>
+                        <span class="modal-value" id="modal-position">—</span>
+                    </div>
+                    <hr class="modal-divider" />
+                    <div class="modal-row">
+                        <span class="modal-label">Destination</span>
+                        <span class="modal-value" id="modal-destination"
+                            >No active delivery</span
+                        >
+                    </div>
+                    <div class="modal-row">
+                        <span class="modal-label">Distance to target</span>
+                        <span class="modal-value accent" id="modal-distance"
+                            >—</span
+                        >
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <script
+            src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+            crossorigin=""
+        ></script>
+        <script>
+            // ── Canvas renderer — all markers share one <canvas> draw call ─────────────
+            const renderer = L.canvas({ padding: 0.5 });
+            const map = L.map("map", { renderer }).setView(
+                [40.7128, -74.006],
+                13,
+            );
+
+            L.tileLayer(
+                "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png",
+                {
+                    attribution:
+                        "&copy; OpenStreetMap contributors &copy; CARTO",
+                    subdomains: "abcd",
+                    maxZoom: 19,
+                    crossOrigin: 'anonymous'
+                },
+            ).addTo(map);
+
+            // ── Data Stores ────────────────────────────────────────────────────────────
+            const markers = new Map(); // Vehicle dots
+            const destMarkers = new Map(); // Hollow destination rings
+            const dataCache = new Map(); // Latest snapshot data for modals
+            const animStates = new Map(); // Interpolation states
+
+            // ── Zoom-reactive sizing ───────────────────────────────────────────────────
+            function vehicleR() {
+                return Math.max(
+                    4,
+                    Math.min(14, Math.round(4 + (map.getZoom() - 10) * 1.25)),
+                );
+            }
+            function destR() {
+                return Math.max(3, Math.round(vehicleR() * 0.65));
+            }
+
+            map.on("zoomend", () => {
+                const r = vehicleR();
+                const dr = destR();
+                for (const m of markers.values()) m.setRadius(r);
+                for (const m of destMarkers.values()) m.setRadius(dr);
+            });
+
+            // ── Continuous Animation Loop (Lerp) ───────────────────────────────────────
+            let initialViewSet = false;
+            let lastSnapshotTime = performance.now();
+
+            // Network tracking variables
+            let smoothedInterval = 1000;
+            let animDuration = 1150; // Initialize with a padded buffer
+
+            function animateLoop() {
+                const now = performance.now();
+
+                for (const [id, state] of animStates) {
+                    const elapsed = now - state.startTime;
+                    const progress = Math.min(1, elapsed / animDuration);
+
+                    // Linear interpolation
+                    const currentLat =
+                        state.startLat +
+                        (state.targetLat - state.startLat) * progress;
+                    const currentLng =
+                        state.startLng +
+                        (state.targetLng - state.startLng) * progress;
+
+                    const m = markers.get(id);
+                    if (m) {
+                        m.setLatLng([currentLat, currentLng]);
+                    }
+                }
+
+                requestAnimationFrame(animateLoop);
+            }
+            requestAnimationFrame(animateLoop);
+
+            // ── WebSocket Data Handler ─────────────────────────────────────────────────
+            function processSnapshot(snapshot) {
+                const vehicles = snapshot?.vehicles;
+                if (!vehicles) return;
+
+                const now = performance.now();
+                const timeSinceLastFrame = now - lastSnapshotTime;
+
+                // 1. Calculate Smoothed Network Speed
+                // Ignore absurdly fast bursts (<100ms) or massive lag spikes (>5000ms)
+                if (timeSinceLastFrame > 100 && timeSinceLastFrame < 5000) {
+                    // Exponential Moving Average (80% old speed, 20% new speed)
+                    smoothedInterval =
+                        smoothedInterval * 0.8 + timeSinceLastFrame * 0.2;
+                    // The Magic Fix: Pad the duration by 15% so it NEVER runs out of track
+                    animDuration = smoothedInterval * 1.15;
+                }
+                lastSnapshotTime = now;
+
+                const r = vehicleR();
+                const dr = destR();
+                const seen = new Set();
+
+                for (const v of vehicles) {
+                    seen.add(v.id);
+                    dataCache.set(v.id, v);
+
+                    const delivering = v.destination != null;
+                    const color = delivering ? "#3b82f6" : "#6b7280";
+
+                    // 2. Manage Animation State
+                    if (animStates.has(v.id)) {
+                        const state = animStates.get(v.id);
+
+                        // Ignore micro-jitter (less than ~1 meter)
+                        // If coordinates match, we skip updating startTime, allowing parked cars to gracefully halt
+                        const latDiff = Math.abs(state.targetLat - v.lat);
+                        const lngDiff = Math.abs(state.targetLng - v.lng);
+
+                        if (latDiff > 0.00001 || lngDiff > 0.00001) {
+                            const m = markers.get(v.id);
+                            const currentPos = m
+                                ? m.getLatLng()
+                                : { lat: v.lat, lng: v.lng };
+
+                            // Seamlessly handoff from current visual position to new target
+                            state.startLat = currentPos.lat;
+                            state.startLng = currentPos.lng;
+                            state.targetLat = v.lat;
+                            state.targetLng = v.lng;
+                            state.startTime = now;
+                        }
+                    } else {
+                        animStates.set(v.id, {
+                            startLat: v.lat,
+                            startLng: v.lng,
+                            targetLat: v.lat,
+                            targetLng: v.lng,
+                            startTime: now,
+                        });
+                    }
+
+                    // 3. Manage Vehicle Marker (Creation & Colors)
+                    if (markers.has(v.id)) {
+                        const m = markers.get(v.id);
+                        if (m._currentColor !== color) {
+                            m.setStyle({ color, fillColor: color });
+                            m._currentColor = color;
+                        }
+                    } else {
+                        const m = L.circleMarker([v.lat, v.lng], {
+                            renderer,
+                            radius: r,
+                            color,
+                            fillColor: color,
+                            fillOpacity: 0.9,
+                            weight: 1.5,
+                        });
+                        m._currentColor = color;
+                        m.on("click", (e) => {
+                            L.DomEvent.stopPropagation(e);
+                            openModal(v.id);
+                        });
+                        m.addTo(map);
+                        markers.set(v.id, m);
+                    }
+
+                    // 4. Manage Destination Rings
+                    if (delivering) {
+                        const dlatlng = [v.destination.lat, v.destination.lng];
+                        if (destMarkers.has(v.id)) {
+                            destMarkers.get(v.id).setLatLng(dlatlng);
+                        } else {
+                            destMarkers.set(
+                                v.id,
+                                L.circleMarker(dlatlng, {
+                                    renderer,
+                                    radius: dr,
+                                    color: "#3b82f6",
+                                    fillColor: "transparent",
+                                    fillOpacity: 0,
+                                    weight: 2,
+                                    opacity: 0.5,
+                                }).addTo(map),
+                            );
+                        }
+                    } else if (destMarkers.has(v.id)) {
+                        destMarkers.get(v.id).remove();
+                        destMarkers.delete(v.id);
+                    }
+                }
+
+                // 5. Cleanup disconnected/missing vehicles
+                for (const [id, m] of markers) {
+                    if (!seen.has(id)) {
+                        m.remove();
+                        markers.delete(id);
+                        dataCache.delete(id);
+                        animStates.delete(id);
+                        if (destMarkers.has(id)) {
+                            destMarkers.get(id).remove();
+                            destMarkers.delete(id);
+                        }
+                    }
+                }
+
+                // 6. Initial Map View fit
+                if (!initialViewSet && vehicles.length > 0) {
+                    initialViewSet = true;
+                    const bounds = vehicles.map((v) => [v.lat, v.lng]);
+                    map.fitBounds(bounds, { padding: [40, 40], maxZoom: 15 });
+                }
+
+                // 7. Update UI status
+                const deliveringCount = vehicles.filter(
+                    (v) => v.destination != null,
+                ).length;
+                statusText.textContent = `${vehicles.length} vehicles · ${deliveringCount} delivering · ${clockStr()}`;
+            }
+
+            function clockStr() {
+                const d = new Date();
+                return [d.getHours(), d.getMinutes(), d.getSeconds()]
+                    .map((n) => String(n).padStart(2, "0"))
+                    .join(":");
+            }
+
+            // ── Modal Logic ────────────────────────────────────────────────────────
+            const overlay = document.getElementById("modal-overlay");
+            const modalTitle = document.getElementById("modal-title");
+            const modalBadge = document.getElementById("modal-badge");
+            const modalPosition = document.getElementById("modal-position");
+            const modalDest = document.getElementById("modal-destination");
+            const modalDist = document.getElementById("modal-distance");
+
+            function fmtDist(m) {
+                if (m == null) return "—";
+                return m >= 1000
+                    ? (m / 1000).toFixed(2) + " km"
+                    : Math.round(m) + " m";
+            }
+
+            function fmtCoord(lat, lng) {
+                return `${lat.toFixed(5)},  ${lng.toFixed(5)}`;
+            }
+
+            function openModal(id) {
+                const v = dataCache.get(id);
+                if (!v) return;
+
+                const currentPos = markers.get(id).getLatLng();
+                const delivering = v.destination != null;
+
+                modalTitle.textContent = `Vehicle #${v.id}`;
+                modalBadge.textContent = delivering ? "● Delivering" : "● Idle";
+                modalBadge.className =
+                    "modal-badge " + (delivering ? "delivering" : "idle");
+                modalPosition.textContent = fmtCoord(
+                    currentPos.lat,
+                    currentPos.lng,
+                );
+                modalDest.textContent = delivering
+                    ? fmtCoord(v.destination.lat, v.destination.lng)
+                    : "No active delivery";
+                modalDist.textContent = fmtDist(v.distance_meters);
+
+                overlay.classList.add("open");
+            }
+
+            function closeModal() {
+                overlay.classList.remove("open");
+            }
+
+            document
+                .getElementById("modal-close")
+                .addEventListener("click", closeModal);
+            overlay.addEventListener("click", (e) => {
+                if (e.target === overlay) closeModal();
+            });
+            document.addEventListener("keydown", (e) => {
+                if (e.key === "Escape") closeModal();
+            });
+
+            // ── WebSocket Logic ────────────────────────────────────────────────────────
+            const connDot = document.getElementById("conn-dot");
+            const statusText = document.getElementById("status-text");
+
+            function setConn(state) {
+                connDot.className = state;
+            }
+
+            function connect() {
+                const proto = location.protocol === "https:" ? "wss:" : "ws:";
+                const ws = new WebSocket(`${proto}//${location.host}/ws`);
+
+                ws.binaryType = "arraybuffer";
+
+                ws.onopen = () => {
+                    setConn("connected");
+                    statusText.textContent = "Connected — waiting for data…";
+                };
+
+                ws.onmessage = ({ data }) => {
+                    try {
+                        const snapshot = MessagePack.decode(
+                            new Uint8Array(data),
+                        );
+                        processSnapshot(snapshot);
+                    } catch (e) {
+                        console.error("Snapshot parse error:", e);
+                    }
+                };
+
+                ws.onclose = () => {
+                    setConn("reconnecting");
+                    statusText.textContent = "Reconnecting…";
+                    setTimeout(connect, 3000);
+                };
+
+                ws.onerror = (err) => console.error("WebSocket error:", err);
+            }
+
+            connect();
+        </script>
+    </body>
+</html>

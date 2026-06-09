@@ -2,3 +2,5 @@
 **/.venv
 /logs/
 target/
+
+scripts/osrm/*

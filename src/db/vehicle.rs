@@ -2,6 +2,7 @@ use crate::models::delivery::{Coordinates, Delivery, DeliveryAssignment, Deliver
 use crate::models::ids::{DeliveryAssignmentId, DeliveryId, VehicleId};
 use chrono::{DateTime, Utc};
 use sqlx::PgPool;
+use std::collections::HashMap;
 
 pub struct PostgresVehicleRepo {
     pool: PgPool,
@@ -14,16 +15,21 @@ impl PostgresVehicleRepo {
 }
 
 #[derive(sqlx::FromRow)]
+struct ActiveDestinationRow {
+    vehicle_id: VehicleId,
+    lat: f64,
+    lng: f64,
+}
+
+#[derive(sqlx::FromRow)]
 struct ActiveDeliveryRow {
-    // Assignment fields
-    id: i32,
-    vehicle_id: i32,
-    delivery_id: i32,
+    id: DeliveryAssignmentId,
+    vehicle_id: VehicleId,
+    delivery_id: DeliveryId,
     assigned_at: DateTime<Utc>,
     completed_at: Option<DateTime<Utc>>,
-    // Delivery fields
-    latitude: f64,
-    longitude: f64,
+    lat: f64,
+    lng: f64,
     status: String,
 }
 
@@ -32,22 +38,22 @@ impl PostgresVehicleRepo {
         &self,
         vehicle_id: VehicleId,
     ) -> Result<Vec<(DeliveryAssignment, Delivery)>, String> {
-        let rows: Vec<ActiveDeliveryRow> = sqlx::query_as::<_, ActiveDeliveryRow>(
+        let rows: Vec<ActiveDeliveryRow> = sqlx::query_as(
             r#"
             SELECT
                 da.id,
-                da.delivery_id,
                 da.vehicle_id,
+                da.delivery_id,
                 da.assigned_at,
                 da.completed_at,
                 d.lat,
                 d.lng,
                 d.status
             FROM delivery_assignments da
-            INNER JOIN deliveries d
-                ON da.delivery_id = d.id
+            INNER JOIN deliveries d ON da.delivery_id = d.id
             WHERE da.vehicle_id = $1
-                AND da.completed_at IS NULL
+              AND da.completed_at IS NULL
+            ORDER BY da.assigned_at
             "#,
         )
         .bind(vehicle_id)
@@ -55,102 +61,90 @@ impl PostgresVehicleRepo {
         .await
         .map_err(|e| format!("Failed to fetch active deliveries: {e}"))?;
 
-        let result = rows
+        Ok(rows
             .into_iter()
             .map(|row| {
                 let assignment = DeliveryAssignment {
-                    id: DeliveryAssignmentId(row.id),
-                    vehicle_id: VehicleId(row.vehicle_id),
-                    delivery_id: DeliveryId(row.delivery_id),
+                    id: row.id,
+                    vehicle_id: row.vehicle_id,
+                    delivery_id: row.delivery_id,
                     assigned_at: row.assigned_at,
                     completed_at: row.completed_at,
                 };
                 let delivery = Delivery {
-                    id: DeliveryId(row.delivery_id),
+                    id: row.delivery_id,
                     destination: Coordinates {
-                        latitude: row.latitude,
-                        longitude: row.longitude,
+                        latitude: row.lat,
+                        longitude: row.lng,
                     },
                     status: row.status.try_into().unwrap_or(DeliveryStatus::Pending),
                 };
                 (assignment, delivery)
             })
-            .collect();
-        Ok(result)
+            .collect())
     }
 
-    pub async fn get_active_delivery(
+    /// Returns one active destination per vehicle — the oldest active assignment.
+    /// DISTINCT ON guarantees one row per vehicle_id even if multiple active
+    /// assignments exist, preventing silent HashMap key collision in callers.
+    pub async fn get_all_active_destinations(
         &self,
-        vehicle_id: VehicleId,
-    ) -> Result<Vec<Delivery>, String> {
-        sqlx::query_as::<_, Delivery>(
+    ) -> Result<HashMap<VehicleId, Coordinates>, String> {
+        let rows: Vec<ActiveDestinationRow> = sqlx::query_as(
             r#"
-            SELECT
-                d.id,
-                d.lat,
-                d.lng,
-                d.status
-            FROM deliveries d
-            INNER JOIN delivery_assignments da
-                ON d.id = da.delivery_id
-            WHERE da.vehicle_id = $1
-                AND da.completed_at IS NULL
+            SELECT DISTINCT ON (da.vehicle_id)
+                da.vehicle_id, d.lat, d.lng
+            FROM delivery_assignments da
+            INNER JOIN deliveries d ON da.delivery_id = d.id
+            WHERE da.completed_at IS NULL
+            ORDER BY da.vehicle_id, da.assigned_at
             "#,
         )
-        .bind(vehicle_id)
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| format!("Failed to fetch active deliveries: {e}"))
+        .map_err(|e| format!("Failed to fetch active destinations: {e}"))?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| {
+                (
+                    row.vehicle_id,
+                    Coordinates {
+                        latitude: row.lat,
+                        longitude: row.lng,
+                    },
+                )
+            })
+            .collect())
     }
 
-    pub async fn log_proximity_event(
+    /// Atomically closes the assignment and marks the delivery as delivered.
+    /// Returns true if this call actually completed the delivery, false if it was
+    /// already completed by a concurrent request (idempotent no-op).
+    pub async fn complete_delivery(
         &self,
-        delivery_assignment_id: DeliveryAssignmentId,
-        distance_meters: f64,
-        detected_at: DateTime<Utc>,
-    ) -> Result<(), String> {
-        sqlx::query(
+        assignment_id: DeliveryAssignmentId,
+        completed_at: DateTime<Utc>,
+    ) -> Result<bool, String> {
+        let result = sqlx::query(
             r#"
-            INSERT INTO proximity_events (delivery_assignment_id, distance, detected_at)
-            VALUES ($1, $2, $3)
+            WITH closed AS (
+                UPDATE delivery_assignments
+                SET completed_at = $1
+                WHERE id = $2 AND completed_at IS NULL
+                RETURNING delivery_id
+            )
+            UPDATE deliveries
+            SET status = 'delivered'
+            WHERE id = (SELECT delivery_id FROM closed)
             "#,
         )
-        .bind(delivery_assignment_id)
-        .bind(distance_meters)
-        .bind(detected_at)
+        .bind(completed_at)
+        .bind(assignment_id)
         .execute(&self.pool)
         .await
-        .map_err(|e| format!("Failed to log proximity event: {e}"))?;
-        Ok(())
-    }
+        .map_err(|e| format!("Failed to complete delivery: {e}"))?;
 
-    pub async fn assign_delivery(
-        &self,
-        delivery_id: DeliveryId,
-        vehicle_id: VehicleId,
-        now: DateTime<Utc>,
-    ) -> Result<DeliveryAssignment, String> {
-        sqlx::query_as::<_, DeliveryAssignment>(
-            r#"
-            INSERT INTO delivery_assignments (
-                vehicle_id,
-                delivery_id,
-                assigned_at
-            )
-            VALUES ($1, $2, $3)
-            RETURNING
-                id,
-                vehicle_id,
-                delivery_id,
-                assigned_at,
-                completed_at
-            "#,
-        )
-        .bind(vehicle_id)
-        .bind(delivery_id)
-        .bind(now)
-        .fetch_one(&self.pool)
-        .await
-        .map_err(|e| format!("Failed to assign delivery: {e}"))
+        Ok(result.rows_affected() > 0)
     }
 }

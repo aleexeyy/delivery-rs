@@ -14,7 +14,7 @@ async fn ingest_telemetry_handler(
     State(state): State<AppState>,
     Json(payload): Json<IngestTelemetryPayload>,
 ) -> impl IntoResponse {
-    let fleet_service = FleetService::new(state.pool, state.redis);
+    let fleet_service = FleetService::new(state.pool, state.redis, state.proximity_buffer);
 
     match fleet_service
         .process_telemetry(payload.vehicle_id, payload.position)
@@ -25,7 +25,7 @@ async fn ingest_telemetry_handler(
             StatusCode::ACCEPTED
         }
         Err(err) => {
-            eprintln!("[API ERROR] Ingestion pipeline failure: {}", err);
+            tracing::error!(vehicle_id = payload.vehicle_id.0, error = %err, "Telemetry ingestion failed");
             StatusCode::INTERNAL_SERVER_ERROR
         }
     }

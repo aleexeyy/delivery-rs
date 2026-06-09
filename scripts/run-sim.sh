@@ -5,7 +5,7 @@ set -euo pipefail
 # Configuration
 # ----------------------------------------------------------------------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="${SCRIPT_DIR}/../"
+PROJECT_ROOT="${SCRIPT_DIR}/.."
 VENV_DIR="${PROJECT_ROOT}/scripts/sim/.venv"
 SIMULATOR_PY="${PROJECT_ROOT}/scripts/sim/vehicles.py"
 REQUIREMENTS_FILE="${PROJECT_ROOT}/scripts/sim/requirements.txt"

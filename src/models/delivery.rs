@@ -35,7 +35,8 @@ pub struct DeliveryAssignment {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::Type)]
-#[sqlx(type_name = "text", rename_all = "lowercase")]
+#[serde(rename_all = "lowercase")]
+#[sqlx(type_name = "VARCHAR", rename_all = "lowercase")]
 pub enum DeliveryStatus {
     Pending,
     Delivering,
@@ -59,7 +60,9 @@ impl TryFrom<String> for DeliveryStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Coordinates {
+    #[serde(rename = "lat")]
     pub latitude: f64,
+    #[serde(rename = "lng")]
     pub longitude: f64,
 }
 
