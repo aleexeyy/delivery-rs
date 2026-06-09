@@ -1,0 +1,126 @@
+name: fleet-tracking
+
+# ==========================================================
+# EXTENSION FIELDS (DRY Configurations)
+# ==========================================================
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
+    compress: "true"
+
+# ==========================================================
+# SERVICES
+# ==========================================================
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: fleet-db
+    restart: unless-stopped
+    logging: *default-logging
+    networks:
+      - internal_backend
+    env_file:
+      - .env
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    command: ["postgres", "-c", "listen_addresses=*"]
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U $${POSTGRES_USER:-postgres} -d $${POSTGRES_DB:-postgres}",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
+
+  redis:
+    image: redis:7-alpine
+    container_name: fleet-cache
+    restart: unless-stopped
+    logging: *default-logging
+    networks:
+      - internal_backend
+    volumes:
+      - redis_data:/data
+    command: ["redis-server", "--appendonly", "yes"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: fleet-backend:latest
+    container_name: fleet-backend
+    restart: unless-stopped
+    logging: *default-logging
+    networks:
+      - internal_backend
+      - public_gateway
+    volumes:
+      - ./logs:/backend/logs
+    env_file:
+      - .env
+    ports:
+      - "${APP_PORT:-3000}:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    labels:
+      - "autoheal=true"
+
+  autoheal:
+    image: willfarrell/autoheal:latest
+    container_name: autoheal
+    restart: unless-stopped
+    logging: *default-logging
+    volumes:
+      # WARNING: Exposing the docker socket is a critical security vulnerability.
+      # Autoheal requires write access to function. Use carefully.
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - AUTOHEAL_CONTAINER_LABEL=autoheal
+      - DOCKER_SOCK=/var/run/docker.sock
+
+# ==========================================================
+# INFRASTRUCTURE
+# ==========================================================
+networks:
+  internal_backend:
+    driver: bridge
+    internal: true
+  public_gateway:
+    driver: bridge
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
